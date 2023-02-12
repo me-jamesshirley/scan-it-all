@@ -70,12 +70,6 @@ try:
 except FileNotFoundError:
     pass
 
-def spell_check_store_name(word):
-    for business_name in common_store_names:
-        if difflib.SequenceMatcher(None, business_name.lower(), word.lower()).ratio() > .6:
-            return business_name
-
-    return None
 
 def get_scan_optimized_image(original_image):
     ocr_image = original_image.convert('L')
@@ -117,11 +111,27 @@ def find_datetime(text):
     return datetime.combine(parsed_date, parsed_time)
 
 def find_business(text):
-    business = None
+    best_match = None
+    acceptable_ratio = .6
     for line in text.splitlines():
-        business = spell_check_store_name(line)
-        if business is not None:
-            return business
+        lower_line = line.lower()
+        lower_split_line = lower_line.split()
+        for business_name in common_store_names:
+            lower_business = business_name.lower()
+            line_ratio = difflib.SequenceMatcher(None, lower_business, lower_line).ratio()
+            if line_ratio > acceptable_ratio:
+                best_match = business_name
+                acceptable_ratio = line_ratio
+
+            # try also the split line
+            for word in lower_split_line:
+                word_ratio = difflib.SequenceMatcher(None, lower_business, word).ratio()
+                if word_ratio > acceptable_ratio:
+                    best_match = business_name
+                    acceptable_ratio = word_ratio
+
+    if best_match is not None:
+        return best_match
     raise NoBusinessFound
     
 def find_classification(text):
