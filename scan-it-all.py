@@ -14,17 +14,17 @@ from datetime import datetime
 from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 
 class ScannedDocument:
-    def __init__(self, image, ocr_image, ocr_text, date, business, classifcation, base_path='~/Documents'):
+    def __init__(self, image, ocr_image, ocr_text, date, entity, classifcation, base_path='~/Documents'):
         self.image = image
         self.ocr_image = ocr_image
         self.ocr_text = ocr_text
         self.date = date
-        self.business = business
+        self.entity = entity
         self.classifcation = classifcation
         self.base_path = os.path.expanduser(base_path)
 
     def save(self):
-        path = self.base_path + '/' + self.classifcation + '/' + str(self.date.date()) + '/' + self.business + '/'
+        path = self.base_path + '/' + self.classifcation + '/' + str(self.date.date()) + '/' + self.entity + '/'
 
         if not os.path.exists(path):
             os.makedirs(path)
@@ -50,24 +50,7 @@ class ScannedDocument:
         print('Saved ocr image: [' + ocr_full_filename_image + ']')
         print('Saved text: [' + full_filename_text + ']')
 
-class NoBusinessFound(Exception):
-    pass
-
-common_store_names = [
-    "Walmart", 
-    "Target", 
-    "Best Buy", 
-    "Home Depot", 
-    "Lowe's", 
-    "Costco",
-    "Safeway",
-    "Whole Foods",
-    ]
-try:
-    with open(os.path.expanduser('~/.config/scan-it-all/config')) as config_file:
-        config = json.load(config_file)
-        common_store_names.extend(config['store_names'])
-except FileNotFoundError:
+class NoItemFound(Exception):
     pass
 
 
@@ -110,32 +93,62 @@ def find_datetime(text):
 
     return datetime.combine(parsed_date, parsed_time)
 
-def find_business(text):
+
+def find_best_match(text, items_to_test):
     best_match = None
     acceptable_ratio = .6
     for line in text.splitlines():
         lower_line = line.lower()
         lower_split_line = lower_line.split()
-        for business_name in common_store_names:
-            lower_business = business_name.lower()
-            line_ratio = difflib.SequenceMatcher(None, lower_business, lower_line).ratio()
+        for item in items_to_test:
+            lower_item = item.lower()
+            line_ratio = difflib.SequenceMatcher(None, lower_item, lower_line).ratio()
             if line_ratio > acceptable_ratio:
-                best_match = business_name
+                best_match = item
                 acceptable_ratio = line_ratio
 
             # try also the split line
             for word in lower_split_line:
-                word_ratio = difflib.SequenceMatcher(None, lower_business, word).ratio()
+                word_ratio = difflib.SequenceMatcher(None, lower_item, word).ratio()
                 if word_ratio > acceptable_ratio:
-                    best_match = business_name
+                    best_match = item
                     acceptable_ratio = word_ratio
 
-    if best_match is not None:
-        return best_match
-    raise NoBusinessFound
+    return best_match
     
-def find_classification(text):
-    return 'Reciepts'
+
+def find_business(text):
+    return find_best_match(text, common_store_names)
+
+common_tax_documents = [
+    "W-2", 
+    "1099-INT", 
+    "1099-MISC", 
+    ] 
+common_store_names = [
+    "Walmart", 
+    "Target", 
+    "Best Buy", 
+    "Home Depot", 
+    "Lowe's", 
+    "Costco",
+    "Safeway",
+    "Whole Foods",
+    ]
+try:
+    with open(os.path.expanduser('~/.config/scan-it-all/config')) as config_file:
+        config = json.load(config_file)
+        common_store_names.extend(config['store_names'])
+except FileNotFoundError:
+    pass
+def find_classification_and_entity(text):
+    taxes_match = find_best_match(text, common_tax_documents)
+    if taxes_match is not None:
+        return ('Taxes', taxes_match)
+    store_match = find_best_match(text, common_store_names)
+    if store_match is not None:
+        return ('Reciepts', store_match)
+    raise NotImplemented
 
 def add_padding(img, padding):
     # Convert the image to a numpy array
@@ -159,12 +172,14 @@ def add_padding(img, padding):
 
 
 def crop_image(image):
-    image = add_padding(image, 64)
+    padded_image = add_padding(image, 64)
     
-    optimized_image = get_scan_optimized_image(image)
+    optimized_image = get_scan_optimized_image(padded_image)
     np_optimized_image = np.array(optimized_image)
-    
-    edged = cv2.Canny(np_optimized_image, 30, 200)
+    kernel = np.ones((5,5),np.uint8)
+    np_eroded_image = cv2.morphologyEx(np_optimized_image, cv2.MORPH_CLOSE, kernel, iterations= 3)
+
+    edged = cv2.Canny(np_eroded_image, 30, 200)
 
     contours, hierarchy = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
@@ -180,7 +195,7 @@ def crop_image(image):
     x, y, w, h = cv2.boundingRect(max_contour)
 
     # Crop the image to the contour
-    cropped_img = np.array(image)[y:y + h, x:x + w]
+    cropped_img = np.array(padded_image)[y:y + h, x:x + w]
 
     return Image.fromarray(cropped_img)
 
@@ -199,14 +214,11 @@ def scan_and_ocr(device):
     # Try to find a date/time
     datetime = find_datetime(text)
 
-    # Try to find a business
-    business = find_business(text)
-
-    # Try to find what type of document this is
-    classifcation = find_classification(text)
+    # Try to find the classification, and entity
+    classifcation, entity = find_classification_and_entity(text)
 
     # Return the extracted text
-    return ScannedDocument(image, ocr_image, text, datetime, business, classifcation)
+    return ScannedDocument(image, ocr_image, text, datetime, entity, classifcation)
 
 
 def run_once(queue):
